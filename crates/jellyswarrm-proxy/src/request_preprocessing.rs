@@ -316,6 +316,24 @@ pub async fn extract_request_infos(
             }
         }
 
+        // DEVICE HINT IS NOT A PRECONDITION:
+        // Device info narrows a user's sessions; it does not decide whether they
+        // have one. It is often approximate -- a request authenticated with only
+        // a token has its device inferred from the User-Agent, which never
+        // matches the device recorded when the session was created through the
+        // Jellyfin ApiClient. Letting the device filter empty the list turns a
+        // valid, authenticated request into "no authorization sessions
+        // available", i.e. a 400. Retry without the hint as a last resort, after
+        // the Android TV rebind above has had its chance (that path relies on a
+        // strict lookup returning nothing).
+        if sessions.is_empty() && device.is_some() {
+            debug!("No session matched the device hint; retrying without it");
+            sessions = state
+                .user_authorization
+                .get_user_sessions(&user.id, None)
+                .await?;
+        }
+
         // filter for online servers only
         let mut filtered_sessions: Vec<(AuthorizationSession, Server)> =
             Vec::with_capacity(sessions.len());
