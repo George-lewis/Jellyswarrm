@@ -98,6 +98,40 @@ impl fmt::Debug for JellyfinAuthorization {
     }
 }
 
+/// Builds device info from a parsed authorization header, or `None` when the
+/// header carried no device information at all.
+///
+/// `Authorization: MediaBrowser Token="..."` is valid Jellyfin authentication
+/// and parses to entirely blank device fields. Returning a blank `Device` would
+/// be worse than returning nothing: session lookup filters on
+/// `Device::matches`, which compares the normalized client first, so a blank
+/// client matches no stored session. Every session gets filtered out and the
+/// request fails with "no authorization sessions available" -- a 400 for what
+/// is a perfectly valid request. Treat "no device info" as "do not filter by
+/// device", which is how the token-only variants already behave.
+fn device_from_authorization(auth: &Authorization) -> Option<Device> {
+    let device = Device {
+        client: auth.client.clone(),
+        device: auth.device.clone(),
+        device_id: auth.device_id.clone(),
+        version: auth.version.clone(),
+    };
+
+    if [
+        &device.client,
+        &device.device,
+        &device.device_id,
+        &device.version,
+    ]
+    .iter()
+    .all(|value| value.trim().is_empty())
+    {
+        return None;
+    }
+
+    Some(device)
+}
+
 impl JellyfinAuthorization {
     pub fn token_ref(&self) -> Option<&str> {
         match self {
@@ -115,18 +149,8 @@ impl JellyfinAuthorization {
 
     pub fn get_device(&self, headers: &http::HeaderMap) -> Option<Device> {
         match self {
-            JellyfinAuthorization::Authorization(auth) => Some(Device {
-                client: auth.client.clone(),
-                device: auth.device.clone(),
-                device_id: auth.device_id.clone(),
-                version: auth.version.clone(),
-            }),
-            JellyfinAuthorization::XEmbyAuthorization(auth) => Some(Device {
-                client: auth.client.clone(),
-                device: auth.device.clone(),
-                device_id: auth.device_id.clone(),
-                version: auth.version.clone(),
-            }),
+            JellyfinAuthorization::Authorization(auth)
+            | JellyfinAuthorization::XEmbyAuthorization(auth) => device_from_authorization(auth),
             JellyfinAuthorization::XMediaBrowser(_) => None,
             JellyfinAuthorization::ApiKey(_) => None,
             JellyfinAuthorization::XEmbyToken(_) => {
@@ -733,7 +757,7 @@ mod tests {
             .await
             .unwrap();
 
-        let headers = http::HeaderMap::new();
+        let headers = axum::http::HeaderMap::new();
         let uri: http::Uri = format!("/Users/{}", victim.id).parse().unwrap();
 
         let identity = resolve_request_identity_from_headers_uri(&headers, &uri, &state)
@@ -752,7 +776,7 @@ mod tests {
             .await
             .unwrap();
 
-        let headers = http::HeaderMap::new();
+        let headers = axum::http::HeaderMap::new();
         let uri: http::Uri = format!("/UserViews?userId={}", victim.id).parse().unwrap();
 
         let identity = resolve_request_identity_from_headers_uri(&headers, &uri, &state)
@@ -771,7 +795,7 @@ mod tests {
             .await
             .unwrap();
 
-        let headers = http::HeaderMap::new();
+        let headers = axum::http::HeaderMap::new();
         let uri: http::Uri = format!("/UserItems/Resume?userId={}", victim.id)
             .parse()
             .unwrap();
@@ -842,5 +866,76 @@ mod tests {
             .unwrap();
 
         assert_eq!(identity.user.unwrap().id, caller.id);
+    }
+}
+
+#[cfg(test)]
+mod device_from_authorization_tests {
+    use super::{device_from_authorization, JellyfinAuthorization};
+    use crate::models::Authorization;
+    use crate::user_authorization_service::Device;
+
+    fn auth(client: &str, device: &str, device_id: &str, version: &str) -> Authorization {
+        Authorization {
+            client: client.to_string(),
+            device: device.to_string(),
+            device_id: device_id.to_string(),
+            version: version.to_string(),
+            token: Some("token".to_string()),
+        }
+    }
+
+    /// `Authorization: MediaBrowser Token="..."` carries no device information.
+    /// It must not produce a blank Device, which would filter out every session.
+    #[test]
+    fn token_only_authorization_yields_no_device() {
+        assert!(device_from_authorization(&auth("", "", "", "")).is_none());
+        assert!(device_from_authorization(&auth("  ", "", " ", "")).is_none());
+    }
+
+    #[test]
+    fn populated_authorization_yields_a_device() {
+        let device =
+            device_from_authorization(&auth("Jellyfin Web", "Chrome", "abc123", "10.11.11"))
+                .expect("device info present");
+        assert_eq!(device.client, "Jellyfin Web");
+        assert_eq!(device.device_id, "abc123");
+    }
+
+    /// Any single populated field is enough to treat it as real device info.
+    #[test]
+    fn partially_populated_authorization_yields_a_device() {
+        assert!(device_from_authorization(&auth("Jellyfin Web", "", "", "")).is_some());
+        assert!(device_from_authorization(&auth("", "", "abc123", "")).is_some());
+    }
+
+    /// A blank device would never match a stored session -- this is the failure
+    /// the None return above avoids.
+    #[test]
+    fn blank_device_matches_no_real_session() {
+        let blank = Device {
+            client: String::new(),
+            device: String::new(),
+            device_id: String::new(),
+            version: String::new(),
+        };
+        let stored = Device {
+            client: "Jellyfin Web".to_string(),
+            device: "Chrome".to_string(),
+            device_id: "abc123".to_string(),
+            version: "10.11.11".to_string(),
+        };
+        assert!(!blank.matches(&stored));
+    }
+
+    #[test]
+    fn token_only_variants_still_have_no_device_info() {
+        let headers = axum::http::HeaderMap::new();
+        assert!(JellyfinAuthorization::XMediaBrowser("t".into())
+            .get_device(&headers)
+            .is_none());
+        assert!(JellyfinAuthorization::ApiKey("t".into())
+            .get_device(&headers)
+            .is_none());
     }
 }
