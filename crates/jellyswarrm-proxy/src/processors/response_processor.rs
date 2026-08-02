@@ -145,7 +145,16 @@ impl JsonProcessor<ResponseProcessingContext> for ResponseProcessor {
             && RESPONSE_MEDIA_ID_FIELDS.contains(&json_context.key)
             && !is_legacy_unmapped_media_id_field(json_context)
         {
-            if let Some(id) = value.as_str().map(str::to_string) {
+            // Only ID-shaped values are real media IDs. Upstream lists
+            // PlaylistItemId here, but jellyfin-web fills it with its own queue
+            // keys ("playlistItem0"), and virtual_media_id mints a mapping for
+            // any string it is given -- so every queue key became a permanent
+            // bogus media mapping. Same guard as the map-key path.
+            if let Some(id) = value
+                .as_str()
+                .map(str::to_string)
+                .filter(|id| is_id_like(id))
+            {
                 match self.virtual_media_id(&id, &context.server).await {
                     Ok(virtual_id) => {
                         debug!(
@@ -319,5 +328,17 @@ mod tests {
     fn unrelated_maps_are_untouched() {
         assert!(!should_remap_map_key("UserData"));
         assert!(!should_remap_map_key("ProviderIds"));
+    }
+
+    /// jellyfin-web fills PlaylistItemId with its own play-queue keys, not media
+    /// IDs. RESPONSE_MEDIA_ID_FIELDS lists the field (upstream), so without an
+    /// ID-shape check every queue key was minted as a permanent media mapping.
+    #[test]
+    fn playlist_queue_keys_are_not_media_ids() {
+        for key in ["playlistItem0", "playlistItem1", "playlistItem2"] {
+            assert!(!is_id_like(key), "{key} must not be treated as a media ID");
+        }
+        // Real Jellyfin item IDs must still be remapped.
+        assert!(is_id_like("b1b9200a4a229b2986fffab3da94da62"));
     }
 }
