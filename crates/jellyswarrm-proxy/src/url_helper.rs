@@ -29,23 +29,36 @@ pub fn join_server_url(server_url: &Url, request_path: &str) -> Url {
 }
 
 pub fn contains_id(url: &Url, name: &str) -> Option<String> {
+    contains_id_at_offset(url, name, 1)
+}
+
+/// Finds an ID-like path segment `offset` segments after the segment matching
+/// `name`.
+///
+/// Most Jellyfin routes put the ID directly after a literal tag
+/// (`/Items/{itemId}`), which is `offset == 1`. Some plugin routes address a
+/// resource by two IDs at once -- Jellyfin Enhanced uses
+/// `/JellyfinEnhanced/watch-progress/{userId}/{itemId}` -- so the item ID sits
+/// at `offset == 2` with the user ID in between. A plain "tag then ID" match
+/// cannot reach it, because the segment before it is itself an ID rather than a
+/// literal.
+pub fn contains_id_at_offset(url: &Url, name: &str, offset: usize) -> Option<String> {
     let segments: Vec<&str> = match url.path_segments() {
         Some(segments) => segments.collect(),
         None => Vec::new(),
     };
 
-    let mut i = 0;
-
-    while i < segments.len() {
-        if i + 1 < segments.len() {
-            let current = segments[i];
-            let next = segments[i + 1];
-
-            if current.eq_ignore_ascii_case(name) && is_id_like(next) {
-                return Some(next.to_string());
-            }
+    for i in 0..segments.len() {
+        let Some(candidate_index) = i.checked_add(offset) else {
+            continue;
+        };
+        if candidate_index >= segments.len() {
+            continue;
         }
-        i += 1;
+
+        if segments[i].eq_ignore_ascii_case(name) && is_id_like(segments[candidate_index]) {
+            return Some(segments[candidate_index].to_string());
+        }
     }
     None
 }
@@ -114,6 +127,27 @@ mod tests {
     fn test_contains_id_not_found() {
         let url = Url::parse("https://example.com/foo/bar").unwrap();
         assert_eq!(contains_id(&url, "foo"), None);
+    }
+
+    #[test]
+    fn test_contains_id_at_offset() {
+        // /JellyfinEnhanced/watch-progress/{userId}/{itemId}
+        let url = Url::parse(
+            "https://example.com/JellyfinEnhanced/watch-progress/\
+             8502fd20-3583-4ea0-b058-ed4b4fc78e7b/0ac31223-37b9-4e40-bf48-79c473d07aca",
+        )
+        .unwrap();
+
+        assert_eq!(
+            contains_id_at_offset(&url, "watch-progress", 1),
+            Some("8502fd20-3583-4ea0-b058-ed4b4fc78e7b".to_string())
+        );
+        assert_eq!(
+            contains_id_at_offset(&url, "watch-progress", 2),
+            Some("0ac31223-37b9-4e40-bf48-79c473d07aca".to_string())
+        );
+        // Offset running past the end of the path must not panic.
+        assert_eq!(contains_id_at_offset(&url, "watch-progress", 3), None);
     }
 
     #[test]

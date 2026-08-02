@@ -5,7 +5,7 @@ use crate::{
     media_storage_service::MediaMapping,
     server_id::ServerId,
     server_storage::Server,
-    url_helper::{contains_id, is_id_like, replace_id},
+    url_helper::{contains_id, contains_id_at_offset, is_id_like, replace_id},
     user_authorization_service::AuthorizationSession,
     virtual_library_service::{VirtualLibraryAccessScope, VirtualLibraryResolution},
     DataContext,
@@ -48,9 +48,45 @@ pub static MEDIA_ID_QUERY_TAGS: &[&str] = &[
     "ExcludeArtistIds",
 ];
 
-pub static USER_ID_PATH_TAGS: &[&str] = &["Users"];
+/// Routes that address a resource by user ID *and* media ID, as
+/// `/JellyfinEnhanced/{tag}/{userId}/{itemId}`. The media ID is two segments
+/// after the tag rather than one, so it needs an explicit offset -- the
+/// segment in front of it is the user ID, not a literal we can match on.
+pub static MEDIA_ID_PATH_TAGS_WITH_OFFSET: &[(&str, usize)] =
+    &[("watch-progress", 2), ("file-size", 2)];
+
+pub static USER_ID_PATH_TAGS: &[&str] = &[
+    "Users",
+    // Jellyfin Enhanced (github.com/n00bcodr/Jellyfin-Enhanced) puts the user
+    // ID in the path on its own routes, e.g.
+    // `/JellyfinEnhanced/user-settings/{userId}/settings.json`. Without these
+    // tags the virtual user ID reaches the upstream server unmapped and the
+    // plugin rejects the request with 403, so per-user settings, shortcuts,
+    // bookmarks and hidden content silently fail to load or save.
+    "user-settings",
+    "hidden-content",
+    "tag-cache",
+    "tag-data",
+    "watch-progress",
+    "file-size",
+];
 pub static USER_ID_QUERY_TAGS: &[&str] = &["UserId"];
 pub static API_KEY_QUERY_TAGS: &[&str] = &["api_key", "ApiKey"];
+
+/// Every media ID present in the path, paired with the tag that located it.
+///
+/// Covers both the common `/{tag}/{itemId}` shape and the plugin routes where
+/// the media ID trails a user ID (see [`MEDIA_ID_PATH_TAGS_WITH_OFFSET`]).
+fn media_ids_in_path(url: &url::Url) -> Vec<(&'static str, String)> {
+    MEDIA_ID_PATH_TAGS
+        .iter()
+        .map(|&tag| (tag, 1usize))
+        .chain(MEDIA_ID_PATH_TAGS_WITH_OFFSET.iter().copied())
+        .filter_map(|(tag, offset)| {
+            contains_id_at_offset(url, tag, offset).map(|media_id| (tag, media_id))
+        })
+        .collect()
+}
 
 pub struct UrlProcessor {
     data_context: DataContext,
@@ -135,18 +171,16 @@ impl UrlProcessor {
         access_scope: Option<&VirtualLibraryAccessScope>,
         required_server_id: Option<ServerId>,
     ) {
-        for &path_segment in MEDIA_ID_PATH_TAGS {
-            if let Some(media_id) = contains_id(url, path_segment) {
-                if let Some(media_mapping) = self
-                    .client_media_mapping(&media_id, access_scope, required_server_id)
-                    .await
-                {
-                    debug!(
-                        "Replacing media ID in path: {} -> {}",
-                        media_id, media_mapping.original_media_id
-                    );
-                    *url = replace_id(url.clone(), &media_id, &media_mapping.original_media_id);
-                }
+        for (_, media_id) in media_ids_in_path(url) {
+            if let Some(media_mapping) = self
+                .client_media_mapping(&media_id, access_scope, required_server_id)
+                .await
+            {
+                debug!(
+                    "Replacing media ID in path: {} -> {}",
+                    media_id, media_mapping.original_media_id
+                );
+                *url = replace_id(url.clone(), &media_id, &media_mapping.original_media_id);
             }
         }
     }
@@ -355,21 +389,19 @@ impl UrlProcessor {
         url: &url::Url,
         access_scope: Option<&VirtualLibraryAccessScope>,
     ) -> Result<Option<Server>> {
-        for &path_segment in MEDIA_ID_PATH_TAGS {
-            if let Some(media_id) = contains_id(url, path_segment) {
-                debug!("Found {} ID in request: {}", path_segment, media_id);
-                if let Some(server) = self
-                    .server_from_client_media_id(&media_id, access_scope)
-                    .await?
-                {
-                    debug!(
-                        "Found server for {} ID {}: {} ({})",
-                        path_segment, media_id, server.name, server.url
-                    );
-                    return Ok(Some(server));
-                }
-                debug!("No server found for {} ID: {}", path_segment, media_id);
+        for (path_segment, media_id) in media_ids_in_path(url) {
+            debug!("Found {} ID in request: {}", path_segment, media_id);
+            if let Some(server) = self
+                .server_from_client_media_id(&media_id, access_scope)
+                .await?
+            {
+                debug!(
+                    "Found server for {} ID {}: {} ({})",
+                    path_segment, media_id, server.name, server.url
+                );
+                return Ok(Some(server));
             }
+            debug!("No server found for {} ID: {}", path_segment, media_id);
         }
 
         Ok(None)
@@ -511,6 +543,54 @@ pub fn matches_case_insensitive(value: &str, candidates: &[&str]) -> bool {
     candidates
         .iter()
         .any(|candidate| value.eq_ignore_ascii_case(candidate))
+}
+
+#[cfg(test)]
+mod user_id_path_tag_tests {
+    use super::USER_ID_PATH_TAGS;
+    use crate::url_helper::contains_id;
+
+    /// Jellyfin Enhanced addresses per-user data by putting the user ID in the
+    /// path. Each of these must resolve via some tag in USER_ID_PATH_TAGS,
+    /// otherwise the virtual ID reaches the upstream server and it answers 403.
+    #[test]
+    fn jellyfin_enhanced_user_routes_resolve_a_user_id() {
+        let user_id = "8502fd20-3583-4ea0-b058-ed4b4fc78e7b";
+        let paths = [
+            format!("/JellyfinEnhanced/user-settings/{user_id}/settings.json"),
+            format!("/JellyfinEnhanced/user-settings/{user_id}/shortcuts.json"),
+            format!("/JellyfinEnhanced/user-settings/{user_id}/bookmark.json"),
+            format!("/JellyfinEnhanced/user-settings/{user_id}/elsewhere.json"),
+            format!("/JellyfinEnhanced/user-settings/{user_id}/hidden-content.json"),
+            format!("/JellyfinEnhanced/tag-cache/{user_id}"),
+            format!("/JellyfinEnhanced/tag-data/{user_id}"),
+            format!("/JellyfinEnhanced/watch-progress/{user_id}/item"),
+            format!("/JellyfinEnhanced/admin/hidden-content/{user_id}"),
+        ];
+
+        for path in paths {
+            let url = url::Url::parse(&format!("https://example.com{path}")).unwrap();
+            let found = USER_ID_PATH_TAGS
+                .iter()
+                .find_map(|tag| contains_id(&url, tag));
+            assert_eq!(
+                found.as_deref(),
+                Some(user_id),
+                "no user ID found in {path}"
+            );
+        }
+    }
+
+    /// The stock Jellyfin route must keep working.
+    #[test]
+    fn stock_user_route_still_resolves() {
+        let user_id = "954df7a8-3f5b-4ce8-82c9-389471d902d5";
+        let url = url::Url::parse(&format!("https://example.com/Users/{user_id}/Items")).unwrap();
+        let found = USER_ID_PATH_TAGS
+            .iter()
+            .find_map(|tag| contains_id(&url, tag));
+        assert_eq!(found.as_deref(), Some(user_id));
+    }
 }
 
 #[cfg(test)]
