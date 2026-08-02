@@ -1026,7 +1026,10 @@ async fn proxy_handler(
         path
     };
     let path = if path.is_empty() { "index.html" } else { path };
-    let decoded_path = normalize_asset_lookup_path(&percent_decode_str(path).decode_utf8_lossy());
+    // Keep the request path as sent: normalization strips the `web/` prefix,
+    // which is exactly what `is_web_client_asset` needs to see further down.
+    let requested_path = percent_decode_str(path).decode_utf8_lossy().to_string();
+    let decoded_path = normalize_asset_lookup_path(&requested_path);
     if let Some(content) = Asset::get(&decoded_path) {
         let mime = mime_guess::from_path(&decoded_path).first_or_octet_stream();
         return Response::builder()
@@ -1100,7 +1103,8 @@ async fn proxy_handler(
     {
         return Err(StatusCode::BAD_GATEWAY);
     }
-    if is_json_response(&headers) && !body_bytes.is_empty() {
+    if is_json_response(&headers) && !body_bytes.is_empty() && !is_web_client_asset(&requested_path)
+    {
         match serde_json::from_slice::<serde_json::Value>(&body_bytes) {
             Ok(mut json_value) => {
                 let was_modified = state
@@ -1200,6 +1204,17 @@ async fn proxy_handler(
     }
 
     Ok(response)
+}
+
+/// Files under `/web` are jellyfin-web's own static assets rather than media
+/// API responses. Some are served as `application/json` -- notably
+/// `/web/config.json`, whose theme list is a series of
+/// `{"name": "Dark", "id": "dark"}` entries. Without this guard the ID
+/// rewriter matches those `id` fields and virtualizes them, so the client goes
+/// on to request `/web/themes/<virtual-id>/theme.css`, receives a 404, and
+/// renders with no stylesheet at all.
+fn is_web_client_asset(path: &str) -> bool {
+    path == "web" || path.starts_with("web/")
 }
 
 fn is_json_response(headers: &axum::http::HeaderMap) -> bool {
@@ -1322,3 +1337,23 @@ fn item_detail_routes() -> axum::routing::MethodRouter<AppState> {
 
 #[cfg(test)]
 mod playlist_integration_tests;
+
+#[cfg(test)]
+mod web_client_asset_tests {
+    use super::is_web_client_asset;
+
+    #[test]
+    fn web_client_assets_are_excluded_from_rewriting() {
+        assert!(is_web_client_asset("web"));
+        assert!(is_web_client_asset("web/config.json"));
+        assert!(is_web_client_asset("web/themes/dark/theme.css"));
+    }
+
+    #[test]
+    fn api_responses_are_still_rewritten() {
+        assert!(!is_web_client_asset("Items"));
+        assert!(!is_web_client_asset("Users/8502fd20358 34ea0/Items"));
+        // Must match on a path segment, not a bare prefix.
+        assert!(!is_web_client_asset("webhooks/notify"));
+    }
+}
