@@ -77,8 +77,14 @@ pub static MEDIA_ID_ARRAY_FIELDS: LazyLock<FieldMatcher> =
 pub static MEDIA_ID_MAP_VALUE_FIELDS: LazyLock<FieldMatcher> =
     LazyLock::new(|| FieldMatcher::new(&["ImageTags"]));
 
+/// Fields whose value is a map keyed by media ID.
+///
+/// `Items` covers the Jellyfin Enhanced tag cache, which returns
+/// `{"Items": {"<itemId>": {...}}}`. Note that stock Jellyfin responses use
+/// `Items` for an *array* of items instead; those are not affected, because
+/// only keys that look like IDs are remapped (see `should_remap_map_key`).
 pub static MEDIA_ID_MAP_KEY_FIELDS: LazyLock<FieldMatcher> =
-    LazyLock::new(|| FieldMatcher::new(&["Trickplay"]));
+    LazyLock::new(|| FieldMatcher::new(&["Trickplay", "Items"]));
 
 pub static MEDIA_ID_NESTED_MAP_KEY_FIELDS: LazyLock<FieldMatcher> =
     LazyLock::new(|| FieldMatcher::new(&["ImageBlurHashes"]));
