@@ -208,7 +208,12 @@ impl JsonProcessor<ResponseProcessingContext> for ResponseProcessor {
             && (MEDIA_ID_ARRAY_FIELDS.contains(last_segment(&json_context.parent_path))
                 || MEDIA_ID_LIST_PARENT_FIELDS.contains(last_segment(&json_context.parent_path)))
         {
-            if let Some(id) = value.as_str().map(str::to_string) {
+            let parent = last_segment(&json_context.parent_path);
+            if let Some(id) = value
+                .as_str()
+                .filter(|id| is_mappable_media_id(parent, id))
+                .map(str::to_string)
+            {
                 match self.virtual_media_id(&id, &context.server).await {
                     Ok(virtual_id) => {
                         debug!("Replacing response array media ID {} -> {}", id, virtual_id);
@@ -259,7 +264,11 @@ impl JsonProcessor<ResponseProcessingContext> for ResponseProcessor {
             && RESPONSE_MEDIA_ID_FIELDS.contains(&json_context.key)
             && !is_legacy_unmapped_media_id_field(json_context)
         {
-            if let Some(id) = value.as_str().map(str::to_string) {
+            if let Some(id) = value
+                .as_str()
+                .filter(|id| is_mappable_media_id(&json_context.key, id))
+                .map(str::to_string)
+            {
                 match self.virtual_media_id(&id, &context.server).await {
                     Ok(virtual_id) => {
                         debug!(
@@ -316,6 +325,22 @@ impl JsonProcessor<ResponseProcessingContext> for ResponseProcessor {
 
 fn should_remap_map_value(parent_path: &str) -> bool {
     MEDIA_ID_MAP_VALUE_FIELDS.contains(last_segment(parent_path))
+}
+
+/// Fields that may hold jellyfin-web's own play-queue keys rather than media IDs.
+///
+/// jellyfin-web fills `PlaylistItemId` with keys like `"playlistItem0"` for its
+/// local queue, while real playlist entries carry server-issued IDs.
+static CLIENT_QUEUE_KEY_FIELDS: &[&str] = &["PlaylistItemId", "PlaylistItemIds"];
+
+/// Whether `id`, found under `field`, should be given a media mapping.
+///
+/// `virtual_media_id` mints a mapping for any string it is given, and mappings
+/// are keyed globally by `(value, server_url)`. Without this check every queue
+/// key any client ever used became a permanent bogus row shared by all users.
+/// Requests are unaffected: an unmapped value round-trips unchanged.
+fn is_mappable_media_id(field: &str, id: &str) -> bool {
+    !CLIENT_QUEUE_KEY_FIELDS.contains(&field) || is_id_like(id)
 }
 
 /// Whether entries under `parent_path` are keyed by media ID.
@@ -464,5 +489,17 @@ mod tests {
     fn unrelated_maps_are_untouched() {
         assert!(!should_remap_map_key("UserData"));
         assert!(!should_remap_map_key("ProviderIds"));
+    }
+
+    /// jellyfin-web fills PlaylistItemId with its own play-queue keys, not media
+    /// IDs. RESPONSE_MEDIA_ID_FIELDS lists the field (upstream), so without an
+    /// ID-shape check every queue key was minted as a permanent media mapping.
+    #[test]
+    fn playlist_queue_keys_are_not_media_ids() {
+        for key in ["playlistItem0", "playlistItem1", "playlistItem2"] {
+            assert!(!is_id_like(key), "{key} must not be treated as a media ID");
+        }
+        // Real Jellyfin item IDs must still be remapped.
+        assert!(is_id_like("b1b9200a4a229b2986fffab3da94da62"));
     }
 }

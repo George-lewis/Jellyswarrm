@@ -300,8 +300,8 @@ mod tests {
         let urls = UrlProcessor::new(data.clone());
         // Discover IDs from actual response processing, including two entries for the same song.
         let mut read = json!({"Id":"playlist", "Type":"Playlist", "CanDelete":true,
-            "Items":[{"Id":"song", "PlaylistItemId":"entry-1"}, {"Id":"song", "PlaylistItemId":"entry-2"}],
-            "Ids":["song", "song"], "EntryIds":["entry-1", "entry-2"]});
+            "Items":[{"Id":"song", "PlaylistItemId":"ee000000000000000000000000000001"}, {"Id":"song", "PlaylistItemId":"ee000000000000000000000000000002"}],
+            "Ids":["song", "song"], "EntryIds":["ee000000000000000000000000000001", "ee000000000000000000000000000002"]});
         process_json(&mut read, &responses, &response_context)
             .await
             .unwrap();
@@ -342,11 +342,11 @@ mod tests {
             ),
             (
                 format!("/Playlists/{playlist}/Items?EntryIds={entry1},{entry2}"),
-                "/Playlists/playlist/Items?EntryIds=entry-1%2Centry-2",
+                "/Playlists/playlist/Items?EntryIds=ee000000000000000000000000000001%2Cee000000000000000000000000000002",
             ),
             (
                 format!("/Playlists/{playlist}/Items/{entry2}/Move/0"),
-                "/Playlists/playlist/Items/entry-2/Move/0",
+                "/Playlists/playlist/Items/ee000000000000000000000000000002/Move/0",
             ),
             (format!("/Items/{playlist}"), "/Items/playlist"),
         ] {
@@ -367,7 +367,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             remove,
-            json!({"EntryIds":["entry-1", "entry-2"], "PlaylistItemIds":["entry-1", "entry-2"]})
+            json!({"EntryIds":["ee000000000000000000000000000001", "ee000000000000000000000000000002"], "PlaylistItemIds":["ee000000000000000000000000000001", "ee000000000000000000000000000002"]})
         );
         let foreign = data
             .media_storage

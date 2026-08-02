@@ -869,8 +869,8 @@ async fn saved_playlist_http_lifecycle_preserves_duplicate_entries_and_deletes()
 
     Mock::given(method("GET")).and(path("/Playlists/playlist/Items"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Type":"Playlist", "CanDelete":true,
-            "Items":[{"Id":"song-0", "PlaylistItemId":"entry-1"}, {"Id":"song-0", "PlaylistItemId":"entry-2"}],
-            "EntryIds":["entry-1", "entry-2"]})))
+            "Items":[{"Id":"song-0", "PlaylistItemId":"ee000000000000000000000000000001"}, {"Id":"song-0", "PlaylistItemId":"ee000000000000000000000000000002"}],
+            "EntryIds":["ee000000000000000000000000000001", "ee000000000000000000000000000002"]})))
         .expect(1).mount(&f.upstreams[0]).await;
     let response = f
         .request(Method::GET, &format!("/Playlists/{playlist}/Items"), None)
@@ -886,7 +886,9 @@ async fn saved_playlist_http_lifecycle_preserves_duplicate_entries_and_deletes()
     assert_eq!(read["EntryIds"], json!([first, second]));
 
     Mock::given(method("POST"))
-        .and(path("/Playlists/playlist/Items/entry-2/Move/0"))
+        .and(path(
+            "/Playlists/playlist/Items/ee000000000000000000000000000002/Move/0",
+        ))
         .respond_with(ResponseTemplate::new(204))
         .expect(1)
         .mount(&f.upstreams[0])
@@ -903,7 +905,10 @@ async fn saved_playlist_http_lifecycle_preserves_duplicate_entries_and_deletes()
     );
     Mock::given(method("DELETE"))
         .and(path("/Playlists/playlist/Items"))
-        .and(query_param("EntryIds", "entry-1,entry-2"))
+        .and(query_param(
+            "EntryIds",
+            "ee000000000000000000000000000001,ee000000000000000000000000000002",
+        ))
         .respond_with(ResponseTemplate::new(204))
         .expect(1)
         .mount(&f.upstreams[0])
