@@ -14,6 +14,7 @@ use crate::{
         url_processor::UrlProcessor,
     },
     server_storage::Server,
+    url_helper::is_id_like,
     DataContext,
 };
 
@@ -234,7 +235,10 @@ impl JsonProcessor<ResponseProcessingContext> for ResponseProcessor {
             return result;
         }
 
-        if context.rewrites_media_fields() && should_remap_map_key(&json_context.parent_path) {
+        if context.rewrites_media_fields()
+            && should_remap_map_key(&json_context.parent_path)
+            && is_id_like(&json_context.key)
+        {
             match self
                 .virtual_media_id(&json_context.key, &context.server)
                 .await
@@ -314,6 +318,13 @@ fn should_remap_map_value(parent_path: &str) -> bool {
     MEDIA_ID_MAP_VALUE_FIELDS.contains(last_segment(parent_path))
 }
 
+/// Whether entries under `parent_path` are keyed by media ID.
+///
+/// Callers must additionally check that the key itself is ID-shaped. Array
+/// indices are stripped from the path, so a field inside `Items[0]` of an
+/// ordinary item list reports the same parent as the `Items` map of a tag
+/// cache. Without that check `virtual_media_id` would mint a mapping for
+/// ordinary field names like `Name` and rewrite them into GUIDs.
 fn should_remap_map_key(parent_path: &str) -> bool {
     MEDIA_ID_MAP_KEY_FIELDS.contains(last_segment(parent_path))
         || parent_contains_nested_map_key_field(parent_path)
@@ -416,5 +427,42 @@ mod tests {
             assert_eq!(profile, ResponseProcessingProfile::BestEffortMedia);
             assert!(!profile.requires_json());
         }
+    }
+
+    /// The two shapes that share a parent path once array indices are stripped.
+    const TAG_CACHE_ENTRY_PARENT: &str = "Items";
+    const ITEM_LIST_FIELD_PARENT: &str = "Items[0]";
+
+    #[test]
+    fn tag_cache_map_keys_are_remapped() {
+        // {"Items": {"<itemId>": {...}}}
+        assert!(should_remap_map_key(TAG_CACHE_ENTRY_PARENT));
+        assert!(is_id_like("744f282f643dbfe56d1307ff3bb0240e"));
+    }
+
+    #[test]
+    fn item_list_fields_are_not_remapped() {
+        // {"Items": [{"Name": ..., "Type": ...}]} -- the parent path matches
+        // after index stripping, so the ID-shape check is what protects these.
+        assert_eq!(strip_array_index(ITEM_LIST_FIELD_PARENT), "Items");
+        assert!(should_remap_map_key(ITEM_LIST_FIELD_PARENT));
+
+        for field in ["Name", "Type", "Genres", "ServerId", "CommunityRating"] {
+            assert!(
+                !is_id_like(field),
+                "{field} must not be treated as a media ID"
+            );
+        }
+    }
+
+    #[test]
+    fn trickplay_keys_still_remap() {
+        assert!(should_remap_map_key("Trickplay"));
+    }
+
+    #[test]
+    fn unrelated_maps_are_untouched() {
+        assert!(!should_remap_map_key("UserData"));
+        assert!(!should_remap_map_key("ProviderIds"));
     }
 }
