@@ -35,7 +35,7 @@ impl ClientSession {
         let last_playback = self
             .last_playback
             .map_or_else(|| json!(JELLYFIN_MIN_DATE), |d| json!(d));
-        json!({
+        let mut dto = json!({
             "Id": self.id, "UserId": self.user_id, "UserName": self.user_name,
             "ServerId": server_id, "DeviceId": self.device.device_id,
             "DeviceName": self.device.device, "Client": self.device.client,
@@ -47,7 +47,12 @@ impl ClientSession {
             "PlayState": self.play_state, "NowPlayingItem": self.now_playing,
             "NowViewingItem": self.now_viewing, "NowPlayingQueue": self.queue,
             "HasCustomDeviceName": false
-        })
+        });
+        // Jellyfin omits null fields; clients test for a missing NowPlayingItem, not a null one.
+        if let Value::Object(fields) = &mut dto {
+            fields.retain(|_, v| !v.is_null());
+        }
+        dto
     }
 }
 

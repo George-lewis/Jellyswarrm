@@ -811,6 +811,21 @@ async fn telemetry_still_reaches_its_media_backend_and_updates_local_state() {
 }
 
 #[tokio::test]
+async fn idle_sessions_omit_null_fields_like_jellyfin() {
+    let f = Fixture::new().await;
+    let _tv = f.socket("tv").await;
+    f.capabilities().await;
+    let listed = f.list().await;
+    assert!(!listed.is_empty());
+    for session in &listed {
+        let fields = session.as_object().unwrap();
+        assert!(!fields.contains_key("NowPlayingItem"));
+        assert!(!fields.contains_key("NowViewingItem"));
+        assert!(fields.values().all(|v| !v.is_null()));
+    }
+}
+
+#[tokio::test]
 async fn query_capabilities_filters_browse_and_admin_reset_are_local() {
     let f = Fixture::new().await;
     let mut tv = f.socket("tv").await;
