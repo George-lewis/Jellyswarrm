@@ -121,7 +121,14 @@ impl ClientSessionService {
                             }
                         }
                     }
-                    pending.extend(object.values());
+                    // A media source reuses its item's Id but names the file and has
+                    // Type "Default"; caching it would replace the item it belongs to.
+                    pending.extend(
+                        object
+                            .iter()
+                            .filter(|(key, _)| !key.eq_ignore_ascii_case("MediaSources"))
+                            .map(|(_, value)| value),
+                    );
                 }
                 _ => {}
             }
@@ -415,6 +422,24 @@ mod tests {
             .unwrap()
             .last_activity = Utc::now() - Duration::seconds(SESSION_TTL_SECONDS + 1);
         assert_eq!(service.for_user("user").await.len(), 1);
+    }
+    #[tokio::test]
+    async fn media_sources_do_not_replace_their_item() {
+        let service = ClientSessionService::new(ConnectionHub::default());
+        let source = json!({"Id":"item", "Name":"Show - S01E01 - Pilot [Bluray-1080p]", "Type":"Default", "Protocol":"File"});
+        service
+            .cache_media_response("secret", &json!({"Id":"item", "Name":"Pilot", "Type":"Episode", "MediaSources":[source.clone()]}))
+            .await;
+        // PlaybackInfo answers with the sources alone, after the item was served.
+        service
+            .cache_media_response(
+                "secret",
+                &json!({"MediaSources":[source], "PlaySessionId":"p"}),
+            )
+            .await;
+        let cached = service.media_metadata("secret", "item").await.unwrap();
+        assert_eq!(cached["Type"], "Episode");
+        assert_eq!(cached["Name"], "Pilot");
     }
     #[tokio::test]
     async fn metadata_is_scoped_sanitized_and_late_stops_do_not_clear_new_playback() {
